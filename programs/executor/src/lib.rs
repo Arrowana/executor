@@ -1,12 +1,8 @@
-use anchor_lang::prelude::*;
+use anchor_lang::{
+    prelude::*,
+    solana_program::{instruction::Instruction, program::invoke},
+};
 mod errors;
-mod executable_transaction_message;
-mod small_vec;
-pub mod vault_transaction;
-
-use crate::{errors::ExecutorError, executable_transaction_message::ExecutableTransactionMessage};
-
-pub use vault_transaction::VaultTransactionMessage;
 
 declare_id!("G69kA5xoXCavcekguee2Md15nw7Gd6Q44EjaAcJNx1yi");
 
@@ -17,42 +13,43 @@ pub mod executor {
     pub fn initialize_transaction(
         ctx: Context<InitializeTransaction>,
         space: usize,
-        vault_transaction_message: VaultTransactionMessage,
+        transaction: Transaction,
     ) -> Result<()> {
         msg!("Transaction initialized");
-        ctx.accounts.transaction.vault_transaction_message = vault_transaction_message;
+        ctx.accounts.transaction.set_inner(transaction);
         Ok(())
     }
 
     pub fn execute(ctx: Context<Execute>) -> Result<()> {
-        let transaction_message =
-            core::mem::take(&mut ctx.accounts.transaction.vault_transaction_message);
-        let num_lookups = transaction_message.address_table_lookups.len();
+        let compiled_instructions =
+            std::mem::take(&mut ctx.accounts.transaction.compiled_instructions);
+        let remaining_accounts = ctx.remaining_accounts;
+        for compiled_instruction in compiled_instructions {
+            let program_ai = remaining_accounts
+                .get(usize::from(compiled_instruction.program_id_index))
+                .unwrap();
 
-        let message_account_infos = ctx
-            .remaining_accounts
-            .get(num_lookups..)
-            .ok_or(ExecutorError::InvalidNumberOfAccounts)?;
-        let address_lookup_table_account_infos = ctx
-            .remaining_accounts
-            .get(..num_lookups)
-            .ok_or(ExecutorError::InvalidNumberOfAccounts)?;
+            let mut accounts = Vec::new();
+            let mut account_infos = Vec::new();
+            for account_index in compiled_instruction.accounts {
+                let account_info = remaining_accounts.get(usize::from(account_index)).unwrap();
+                accounts.push(AccountMeta {
+                    pubkey: account_info.key(),
+                    is_signer: account_info.is_signer,
+                    is_writable: account_info.is_writable,
+                });
+                account_infos.push(account_info.clone());
+            }
 
-        let executable_message = ExecutableTransactionMessage::new_validated(
-            transaction_message,
-            message_account_infos,
-            address_lookup_table_account_infos,
-            // &vault_pubkey,
-            // &ephemeral_signer_keys,
-        )?;
-
-        // Execute the transaction message instructions one-by-one.
-        // NOTE: `execute_message()` calls `self.to_instructions_and_accounts()`
-        // which in turn calls `take()` on
-        // `self.message.instructions`, therefore after this point no more
-        // references or usages of `self.message` should be made to avoid
-        // faulty behavior.
-        executable_message.execute_message()?; //vault_seeds, &ephemeral_signer_seeds, &[])?;
+            invoke(
+                &Instruction {
+                    program_id: program_ai.key(),
+                    accounts,
+                    data: compiled_instruction.data,
+                },
+                &account_infos,
+            )?;
+        }
 
         Ok(())
     }
@@ -77,7 +74,18 @@ pub struct Execute<'info> {
     pub transaction: Account<'info, Transaction>,
 }
 
+/// Simplified with no compression to make the POC straightforward, see squads v4 for how to compress
 #[account]
 pub struct Transaction {
-    pub vault_transaction_message: VaultTransactionMessage,
+    pub compiled_instructions: Vec<CompiledInstruction>,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct CompiledInstruction {
+    /// Index into the transaction keys array indicating the program account that executes this instruction.
+    pub program_id_index: u8,
+    /// Ordered indices into the transaction keys array indicating which accounts to pass to the program.
+    pub accounts: Vec<u8>,
+    /// The program input data.
+    pub data: Vec<u8>,
 }
