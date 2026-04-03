@@ -4,7 +4,7 @@ A keeper executes an arbitrary set of instructions on behalf of the user, given 
 
 Steps:
 
-- The signs a "blank" transaction with a durable nonce calling execute on a given transaction account, the transaction uses addresses from a lookup table which are not populated
+- The user signs a "blank" transaction with a durable nonce calling execute on a given transaction account, the transaction uses addresses from a lookup table which are not populated
 - The keeper then initializes the referenced transaction account, and extends the address lookup table with the necessary addresses
 - The keeper then sends the original user transaction
 
